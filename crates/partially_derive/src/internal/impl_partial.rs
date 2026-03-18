@@ -29,15 +29,26 @@ impl<'a> ToTokens for ImplPartial<'a> {
 
         let (imp, ty, wher) = generics.split_for_impl();
 
+        // For Partial→Partial impl, apply_with fields use Partial::apply_some
+        // (the closure is designed for Original→Partial, not Partial→Partial)
+        let is_partial_to_partial = from_ident == to_ident;
+
+        // Exclude nested and apply_with fields from is_some check
+        // (they don't necessarily have Option type)
         let field_is_somes = iter::once(quote!(false))
-            .chain(fields.iter().filter(|f| !f.nested.is_present()).map(|f| {
-                // this is enforced with a better error by [`FieldReceiver::validate`].
-                let from_ident = f.ident.as_ref().unwrap();
+            .chain(
+                fields
+                    .iter()
+                    .filter(|f| !f.nested.is_present() && f.apply_with.is_none())
+                    .map(|f| {
+                        // this is enforced with a better error by [`FieldReceiver::validate`].
+                        let from_ident = f.ident.as_ref().unwrap();
 
-                let to_ident = f.rename.as_ref().unwrap_or(from_ident);
+                        let to_ident = f.rename.as_ref().unwrap_or(from_ident);
 
-                quote!(partial.#to_ident.is_some())
-            }))
+                        quote!(partial.#to_ident.is_some())
+                    }),
+            )
             .collect();
         let field_is_somes = TokenVec::new_with_vec_and_sep(field_is_somes, Separator::Or);
 
@@ -55,6 +66,25 @@ impl<'a> ToTokens for ImplPartial<'a> {
                             &mut self.#from_ident,
                             partial.#to_ident
                         ) || will_apply_some;
+                    }
+                } else if let Some(apply_with_expr) = &f.apply_with {
+                    if is_partial_to_partial {
+                        // Partial→Partial: use Partial::apply_some
+                        // (requires the partial field type to impl Partial)
+                        quote! {
+                            will_apply_some = #krate::Partial::apply_some(
+                                &mut self.#from_ident,
+                                partial.#to_ident
+                            ) || will_apply_some;
+                        }
+                    } else {
+                        // Original→Partial: use custom closure/function
+                        quote! {
+                            will_apply_some = (#apply_with_expr)(
+                                partial.#to_ident,
+                                &mut self.#from_ident
+                            ) || will_apply_some;
+                        }
                     }
                 } else {
                     quote! {

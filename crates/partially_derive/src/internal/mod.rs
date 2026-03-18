@@ -22,10 +22,11 @@ pub fn expand_derive_partial(item: &mut DeriveInput) -> TokenStream {
 
 #[cfg(test)]
 mod test {
+    use darling::FromDeriveInput;
     use proc_macro2::TokenStream;
     use syn::{parse_quote, DeriveInput};
 
-    use super::expand_derive_partial;
+    use super::{derive_receiver::DeriveReceiver, expand_derive_partial};
 
     #[test]
     fn basic_e2e() {
@@ -540,5 +541,109 @@ mod test {
         };
 
         assert_eq!(expanded.to_string(), expected.to_string());
+    }
+
+    #[test]
+    fn apply_with_e2e() {
+        let mut input: DeriveInput = parse_quote! {
+            #[derive(partially::Partial)]
+            #[partially(derive(Default))]
+            struct Config {
+                /// Field with custom applicator closure
+                #[partially(as_type = "CustomPatch<String>", apply_with = "|p, t| p.apply(t)")]
+                patched_field: String,
+                /// Field with custom applicator function
+                #[partially(apply_with = "custom_apply")]
+                func_field: i32,
+                /// Normal field
+                normal_field: bool,
+            }
+        };
+
+        let expanded = expand_derive_partial(&mut input);
+
+        let expected: TokenStream = parse_quote! {
+            #[derive(Default)]
+            struct PartialConfig {
+                /// Field with custom applicator closure
+                patched_field: CustomPatch<String>,
+                /// Field with custom applicator function
+                func_field: Option<i32>,
+                /// Normal field
+                normal_field: Option<bool>,
+            }
+
+            impl partially::Partial for Config {
+                type Item = PartialConfig;
+
+                fn apply_some(&mut self, partial: Self::Item) -> bool {
+                    // Only normal_field is in is_some check (apply_with fields excluded)
+                    let mut will_apply_some = false || partial.normal_field.is_some();
+
+                    // patched_field uses custom closure
+                    will_apply_some = (|p, t| p.apply(t))(
+                        partial.patched_field,
+                        &mut self.patched_field
+                    ) || will_apply_some;
+
+                    // func_field uses custom function
+                    will_apply_some = (custom_apply)(
+                        partial.func_field,
+                        &mut self.func_field
+                    ) || will_apply_some;
+
+                    // normal_field uses default
+                    if let Some(normal_field) = partial.normal_field {
+                        self.normal_field = normal_field.into();
+                    }
+
+                    will_apply_some
+                }
+            }
+
+            impl partially::Partial for PartialConfig {
+                type Item = PartialConfig;
+
+                fn apply_some(&mut self, partial: Self::Item) -> bool {
+                    let mut will_apply_some = false || partial.normal_field.is_some();
+
+                    // Partial→Partial: apply_with fields use Partial::apply_some
+                    will_apply_some = partially::Partial::apply_some(
+                        &mut self.patched_field,
+                        partial.patched_field
+                    ) || will_apply_some;
+
+                    will_apply_some = partially::Partial::apply_some(
+                        &mut self.func_field,
+                        partial.func_field
+                    ) || will_apply_some;
+
+                    if let Some(normal_field) = partial.normal_field {
+                        self.normal_field = normal_field.into();
+                    }
+
+                    will_apply_some
+                }
+            }
+        };
+
+        assert_eq!(expanded.to_string(), expected.to_string());
+    }
+
+    #[test]
+    fn apply_with_nested_mutex() {
+        let input: DeriveInput = parse_quote! {
+            #[derive(partially::Partial)]
+            struct Config {
+                #[partially(nested, apply_with = "|p, t| true")]
+                field: String,
+            }
+        };
+
+        let result = DeriveReceiver::from_derive_input(&input);
+        assert!(
+            result.is_err(),
+            "apply_with and nested should be mutually exclusive"
+        );
     }
 }

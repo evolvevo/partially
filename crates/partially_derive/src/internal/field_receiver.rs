@@ -57,6 +57,15 @@ pub struct FieldReceiver {
     /// An optional flag that indicates that this field has a type that is [`Partial`] and should
     /// be treated as such.
     pub nested: Flag,
+
+    /// An optional custom applicator expression (closure or function).
+    ///
+    /// The expression must be callable with signature:
+    /// `FnOnce(PartialFieldType, &mut OriginalFieldType) -> bool`
+    ///
+    /// Example with closure: `#[partially(apply_with = "|p, t| { *t = p; true }")]`
+    /// Example with function: `#[partially(apply_with = "my_apply_fn")]`
+    pub apply_with: Option<syn::Expr>,
 }
 
 impl FieldReceiver {
@@ -87,6 +96,12 @@ impl FieldReceiver {
         {
             acc.push(darling::Error::custom(
                 "transparent, as_type and nested are mutually exclusive",
+            ));
+        }
+
+        if self.apply_with.is_some() && self.nested.is_present() {
+            acc.push(darling::Error::custom(
+                "apply_with and nested are mutually exclusive (both override application logic)",
             ));
         }
 
@@ -165,6 +180,7 @@ mod test {
             transparent: Flag::default(),
             as_type: None,
             nested: Flag::default(),
+            apply_with: None,
         }
     }
 
